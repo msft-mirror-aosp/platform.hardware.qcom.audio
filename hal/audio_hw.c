@@ -105,6 +105,7 @@ static unsigned int configured_low_latency_capture_period_size =
 #define MMAP_PERIOD_COUNT_MIN 32
 #define MMAP_PERIOD_COUNT_MAX 512
 #define MMAP_PERIOD_COUNT_DEFAULT (MMAP_PERIOD_COUNT_MAX)
+#define MMAP_MIN_SIZE_FRAMES_MAX 64 * 1024
 
 /* This constant enables extended precision handling.
  * TODO The flag is off until more testing is done.
@@ -3811,6 +3812,7 @@ static int out_pause(struct audio_stream_out* stream)
     int status = -ENOSYS;
     ALOGV("%s", __func__);
     if (out->usecase == USECASE_AUDIO_PLAYBACK_OFFLOAD) {
+        status = -ENODATA;
         lock_output_stream(out);
         if (out->compr != NULL && out->offload_state == OFFLOAD_STATE_PLAYING) {
             status = compress_pause(out->compr);
@@ -3827,7 +3829,7 @@ static int out_resume(struct audio_stream_out* stream)
     int status = -ENOSYS;
     ALOGV("%s", __func__);
     if (out->usecase == USECASE_AUDIO_PLAYBACK_OFFLOAD) {
-        status = 0;
+        status = -ENODATA;
         lock_output_stream(out);
         if (out->compr != NULL && out->offload_state == OFFLOAD_STATE_PAUSED) {
             status = compress_resume(out->compr);
@@ -3952,7 +3954,7 @@ static int out_create_mmap_buffer(const struct audio_stream_out *stream,
     lock_output_stream(out);
     pthread_mutex_lock(&adev->lock);
 
-    if (info == NULL || min_size_frames == 0) {
+    if (info == NULL || min_size_frames <= 0 || min_size_frames > MMAP_MIN_SIZE_FRAMES_MAX) {
         ALOGE("%s: info = %p, min_size_frames = %d", __func__, info, min_size_frames);
         ret = -EINVAL;
         goto exit;
@@ -4690,7 +4692,7 @@ static int in_create_mmap_buffer(const struct audio_stream_in *stream,
     pthread_mutex_lock(&adev->lock);
     ALOGV("%s in %p", __func__, in);
 
-    if (info == NULL || min_size_frames == 0) {
+    if (info == NULL || min_size_frames <= 0 || min_size_frames > MMAP_MIN_SIZE_FRAMES_MAX) {
         ALOGE("%s invalid argument info %p min_size_frames %d", __func__, info, min_size_frames);
         ret = -EINVAL;
         goto exit;
@@ -6282,9 +6284,9 @@ static int adev_verify_devices(struct audio_device *adev)
 static int adev_close(hw_device_t *device)
 {
     size_t i;
-    struct audio_device *adev = (struct audio_device *)device;
+    struct audio_device *adev_temp = (struct audio_device *)device;
 
-    if (!adev)
+    if (!adev_temp)
         return 0;
 
     pthread_mutex_lock(&adev_init_lock);
@@ -6568,7 +6570,8 @@ static int adev_open(const hw_module_t *module, const char *name,
 
     char value[PROPERTY_VALUE_MAX];
     int trial;
-    if (property_get("audio_hal.period_size", value, NULL) > 0) {
+    if ((property_get("vendor.audio_hal.period_size", value, NULL) > 0) ||
+        (property_get("audio_hal.period_size", value, NULL) > 0)) {
         trial = atoi(value);
         if (period_size_is_plausible_for_low_latency(trial)) {
             pcm_config_low_latency.period_size = trial;
@@ -6577,7 +6580,8 @@ static int adev_open(const hw_module_t *module, const char *name,
             configured_low_latency_capture_period_size = trial;
         }
     }
-    if (property_get("audio_hal.in_period_size", value, NULL) > 0) {
+    if ((property_get("vendor.audio_hal.in_period_size", value, NULL) > 0) ||
+        (property_get("audio_hal.in_period_size", value, NULL) > 0)) {
         trial = atoi(value);
         if (period_size_is_plausible_for_low_latency(trial)) {
             configured_low_latency_capture_period_size = trial;
@@ -6592,7 +6596,8 @@ static int adev_open(const hw_module_t *module, const char *name,
     // audio_extn_utils_send_default_app_type_cfg(adev->platform, adev->mixer);
     audio_device_ref_count++;
 
-    if (property_get("audio_hal.period_multiplier", value, NULL) > 0) {
+    if ((property_get("vendor.audio_hal.period_multiplier", value, NULL) > 0) ||
+        (property_get("audio_hal.period_multiplier", value, NULL) > 0)) {
         af_period_multiplier = atoi(value);
         if (af_period_multiplier < 0) {
             af_period_multiplier = 2;
